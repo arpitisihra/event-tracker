@@ -45,9 +45,9 @@
       <button onclick="fetchEvents()">Fetch Link</button>
       <button class="alt" onclick="updateEvents()">Update List</button>
     </div>
-    <div style="font-size: 12px; color: #64748b; font-weight: 600;">Or Paste Page Source HTML directly (Bypasses Cloudflare block):</div>
+    <div style="font-size: 12px; color: #64748b; font-weight: 600;">Or Paste Page Source HTML directly:</div>
     <div class="row">
-      <textarea id="sourceInput" placeholder="Paste full HTML source here if Fetch Link is blocked..."></textarea>
+      <textarea id="sourceInput" placeholder="Paste full HTML source here..."></textarea>
       <button onclick="parseFromSource()" style="background: #4f46e5;">Parse Source HTML</button>
     </div>
   </div>
@@ -56,19 +56,19 @@
 
   <h2>🔥 Newly Discovered Events</h2>
   <table>
-    <thead><tr><th>Event</th><th>Date</th><th>Location</th><th>Organizer</th><th>Action</th></tr></thead>
+    <thead><tr><th>Date</th><th>Time</th><th>Event Name</th><th>Link</th><th>Action</th></tr></thead>
     <tbody id="new-table"></tbody>
   </table>
 
   <h2>📋 Active Events</h2>
   <table>
-    <thead><tr><th>Event</th><th>Date</th><th>Location</th><th>Organizer</th><th>Action</th></tr></thead>
+    <thead><tr><th>Date</th><th>Time</th><th>Event Name</th><th>Link</th><th>Action</th></tr></thead>
     <tbody id="active-table"></tbody>
   </table>
 
   <h2>📂 Processed Events (Applied / Not Relevant)</h2>
   <table>
-    <thead><tr><th>Event</th><th>Date</th><th>Status</th><th>Link</th></tr></thead>
+    <thead><tr><th>Date</th><th>Time</th><th>Event Name</th><th>Link</th><th>Status</th></tr></thead>
     <tbody id="processed-table"></tbody>
   </table>
 
@@ -81,6 +81,27 @@
       const el = document.getElementById('status-msg');
       el.className = `status-${type}`;
       el.innerText = text;
+    }
+
+    function formatTime(eventObj) {
+      if (eventObj.allDay) return "ALL DAY";
+      if (!eventObj.startDate) return "ALL DAY";
+      
+      const date = new Date(eventObj.startDate);
+      if (isNaN(date.getTime())) return "ALL DAY";
+      
+      const hours = date.getHours();
+      const minutes = date.getMinutes();
+      if (hours === 0 && minutes === 0) return "ALL DAY";
+      
+      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    function formatDate(eventObj) {
+      if (!eventObj.startDate) return eventObj.weekday || "TBD";
+      const d = new Date(eventObj.startDate);
+      if (isNaN(d.getTime())) return eventObj.weekday || "TBD";
+      return d.toLocaleDateString("en-US", { weekday: 'short', day: 'numeric', month: 'short' });
     }
 
     function extractEventsFromHTML(html) {
@@ -97,10 +118,9 @@
         return {
           id: e.id || item.id || String(Math.random()),
           name: e.name || e.event || "Untitled Event",
-          start_date: e.startDate ? new Date(e.startDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : (e.weekday || "TBD"),
-          location: e.location || (Array.isArray(e.city) ? e.city[0] : e.city) || "Singapore 🇸🇬",
-          website: e.website || e.link || `https://miragather.com/event/${e.slug || ''}`,
-          organizer: e.organizer || (e.hostObjArray && e.hostObjArray[0]?.name) || "Organizer"
+          start_date: formatDate(e),
+          time: formatTime(e),
+          website: e.website || e.link || `https://miragather.com/event/${e.slug || ''}`
         };
       });
     }
@@ -121,9 +141,8 @@
             id: e.id, 
             name: e.name, 
             start_date: e.start_date, 
-            location: e.location, 
-            website: e.website, 
-            organizer: e.organizer 
+            location: e.time, // Using location column to store time
+            website: e.website
           }, { onConflict: 'id', ignoreDuplicates: true });
         }
 
@@ -145,13 +164,14 @@
         processedBody.innerHTML = '';
 
         (events || []).forEach(e => {
+          const eventTime = e.location || 'ALL DAY'; // retrieved from location column
           if (e.status === 'active') {
             activeBody.innerHTML += `
               <tr>
-                <td><strong><a href="${e.website || '#'}" target="_blank">${e.name}</a></strong></td>
-                <td>${e.start_date}</td>
-                <td>${e.location}</td>
-                <td>${e.organizer}</td>
+                <td>${e.start_date || 'TBD'}</td>
+                <td><strong>${eventTime}</strong></td>
+                <td><strong>${e.name}</strong></td>
+                <td><a href="${e.website || '#'}" target="_blank">Link ↗</a></td>
                 <td>
                   <button class="btn-action btn-applied" onclick="setStatus('${e.id}', 'applied')">Applied</button>
                   <button class="btn-action btn-irrelevant" onclick="setStatus('${e.id}', 'not_relevant')">Not Relevant</button>
@@ -161,10 +181,11 @@
             const badgeClass = e.status === 'applied' ? 'badge-applied' : 'badge-not_relevant';
             processedBody.innerHTML += `
               <tr>
+                <td>${e.start_date || 'TBD'}</td>
+                <td>${eventTime}</td>
                 <td>${e.name}</td>
-                <td>${e.start_date}</td>
+                <td><a href="${e.website || '#'}" target="_blank">Link ↗</a></td>
                 <td><span class="badge-status ${badgeClass}">${e.status.replace('_', ' ')}</span></td>
-                <td><a href="${e.website || '#'}" target="_blank">View Event</a></td>
               </tr>`;
           }
         });
@@ -189,16 +210,15 @@
             id: e.id, 
             name: e.name, 
             start_date: e.start_date, 
-            location: e.location, 
-            website: e.website, 
-            organizer: e.organizer 
+            location: e.time, 
+            website: e.website
           }, { onConflict: 'id', ignoreDuplicates: true });
         }
 
         showStatus(`Successfully fetched and saved ${events.length} events!`, "success");
         loadData();
       } catch (err) {
-        showStatus("Automated fetch blocked by site. Please copy page source and use 'Parse Source HTML' below.", "error");
+        showStatus("Automated fetch blocked by site. Please paste page source into the text area below and click 'Parse Source HTML'.", "error");
       }
     }
 
@@ -219,13 +239,13 @@
               newCount++;
               newBody.innerHTML += `
                 <tr>
-                  <td><span class="badge-new">NEW</span> <strong><a href="${e.website || '#'}" target="_blank">${e.name}</a></strong></td>
                   <td>${e.start_date}</td>
-                  <td>${e.location}</td>
-                  <td>${e.organizer}</td>
+                  <td><strong>${e.time}</strong></td>
+                  <td><span class="badge-new">NEW</span> <strong>${e.name}</strong></td>
+                  <td><a href="${e.website || '#'}" target="_blank">Link ↗</a></td>
                   <td>
-                    <button class="btn-action btn-applied" onclick="saveAndSet('${e.id}', '${e.name.replace(/'/g, "")}', '${e.start_date}', '${e.location}', '${e.website}', '${e.organizer}', 'applied')">Applied</button>
-                    <button class="btn-action btn-irrelevant" onclick="saveAndSet('${e.id}', '${e.name.replace(/'/g, "")}', '${e.start_date}', '${e.location}', '${e.website}', '${e.organizer}', 'not_relevant')">Not Relevant</button>
+                    <button class="btn-action btn-applied" onclick="saveAndSet('${e.id}', '${e.name.replace(/'/g, "")}', '${e.start_date}', '${e.time}', '${e.website}', 'applied')">Applied</button>
+                    <button class="btn-action btn-irrelevant" onclick="saveAndSet('${e.id}', '${e.name.replace(/'/g, "")}', '${e.start_date}', '${e.time}', '${e.website}', 'not_relevant')">Not Relevant</button>
                   </td>
                 </tr>`;
             }
@@ -247,8 +267,8 @@
       loadData();
     }
 
-    async function saveAndSet(id, name, start_date, location, website, organizer, status) {
-      await db.from('events').insert({ id, name, start_date, location, website, organizer, status });
+    async function saveAndSet(id, name, start_date, time, website, status) {
+      await db.from('events').insert({ id, name, start_date, location: time, website, status });
       loadData();
       document.getElementById('new-table').innerHTML = '';
     }
