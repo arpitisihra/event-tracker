@@ -83,25 +83,30 @@
       el.innerText = text;
     }
 
-    function formatTime(eventObj) {
-      if (eventObj.allDay) return "ALL DAY";
-      if (!eventObj.startDate) return "ALL DAY";
+    function parseDateTime(e) {
+      // Look everywhere for date strings in Mira's format
+      const rawStart = e.start || e.startDate || e.event?.startDate || e.event?.start;
       
-      const date = new Date(eventObj.startDate);
-      if (isNaN(date.getTime())) return "ALL DAY";
-      
-      const hours = date.getHours();
-      const minutes = date.getMinutes();
-      if (hours === 0 && minutes === 0) return "ALL DAY";
-      
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    }
+      if (!rawStart) {
+        return { date: e.weekday || "TBD", time: "ALL DAY" };
+      }
 
-    function formatDate(eventObj) {
-      if (!eventObj.startDate) return eventObj.weekday || "TBD";
-      const d = new Date(eventObj.startDate);
-      if (isNaN(d.getTime())) return eventObj.weekday || "TBD";
-      return d.toLocaleDateString("en-US", { weekday: 'short', day: 'numeric', month: 'short' });
+      const d = new Date(rawStart);
+      if (isNaN(d.getTime())) {
+        return { date: e.weekday || "TBD", time: "ALL DAY" };
+      }
+
+      const dateStr = d.toLocaleDateString("en-US", { weekday: 'short', day: 'numeric', month: 'short' });
+      
+      const hours = d.getUTCHours();
+      const minutes = d.getUTCMinutes();
+      
+      let timeStr = "ALL DAY";
+      if (!(hours === 0 && minutes === 0) && !e.allDay) {
+        timeStr = d.toLocaleTimeString("en-US", { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Singapore' });
+      }
+
+      return { date: dateStr, time: timeStr };
     }
 
     function extractEventsFromHTML(html) {
@@ -110,19 +115,38 @@
 
       const json = JSON.parse(match[1]);
       const pageProps = json.props?.pageProps || {};
+      
+      // Gather events from all 3 possible arrays in Mira source
+      const allFeatured = pageProps.allFeaturedEvents || [];
       const sideEvents = pageProps.sideEvents || [];
       const mainEvents = pageProps.mainEvents || [];
 
-      return [...sideEvents, ...mainEvents].map(item => {
+      const rawList = [...allFeatured, ...sideEvents, ...mainEvents];
+      const seenIds = new Set();
+      const events = [];
+
+      for (let item of rawList) {
         const e = item.event || item;
-        return {
-          id: e.id || item.id || String(Math.random()),
-          name: e.name || e.event || "Untitled Event",
-          start_date: formatDate(e),
-          time: formatTime(e),
-          website: e.website || e.link || `https://miragather.com/event/${e.slug || ''}`
-        };
-      });
+        const id = e.id || item.id;
+        
+        // Deduplicate events that exist across multiple lists
+        if (!id || seenIds.has(id)) continue;
+        seenIds.add(id);
+
+        const dt = parseDateTime(e);
+        const name = e.name || e.event || "Untitled Event";
+        const website = e.website || e.link || (e.slug ? `https://miragather.com/event/${e.slug}` : "#");
+
+        events.push({
+          id: id,
+          name: name,
+          start_date: dt.date,
+          time: dt.time,
+          website: website
+        });
+      }
+
+      return events;
     }
 
     async function parseFromSource() {
@@ -141,12 +165,12 @@
             id: e.id, 
             name: e.name, 
             start_date: e.start_date, 
-            location: e.time, // Using location column to store time
+            location: e.time, 
             website: e.website
-          }, { onConflict: 'id', ignoreDuplicates: true });
+          }, { onConflict: 'id' });
         }
 
-        showStatus(`Successfully parsed and saved ${events.length} events!`, "success");
+        showStatus(`Successfully parsed and saved ALL ${events.length} events!`, "success");
         loadData();
       } catch (err) {
         showStatus("Parse Error: " + err.message, "error");
@@ -164,7 +188,7 @@
         processedBody.innerHTML = '';
 
         (events || []).forEach(e => {
-          const eventTime = e.location || 'ALL DAY'; // retrieved from location column
+          const eventTime = e.location || 'ALL DAY';
           if (e.status === 'active') {
             activeBody.innerHTML += `
               <tr>
@@ -212,7 +236,7 @@
             start_date: e.start_date, 
             location: e.time, 
             website: e.website
-          }, { onConflict: 'id', ignoreDuplicates: true });
+          }, { onConflict: 'id' });
         }
 
         showStatus(`Successfully fetched and saved ${events.length} events!`, "success");
