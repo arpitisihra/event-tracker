@@ -7,8 +7,10 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; margin: 2rem; background: #f8fafc; color: #0f172a; }
-    .controls { display: flex; gap: 10px; margin-bottom: 10px; }
-    input { flex: 1; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; }
+    .controls { display: flex; flex-direction: column; gap: 10px; margin-bottom: 20px; background: white; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+    .row { display: flex; gap: 10px; }
+    input, textarea { flex: 1; padding: 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 14px; font-family: inherit; }
+    textarea { height: 60px; resize: vertical; }
     button { padding: 10px 16px; background: #2563eb; color: white; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; }
     button:hover { background: #1d4ed8; }
     button.alt { background: #059669; }
@@ -38,9 +40,16 @@
 
   <h1>Team Event Tracker</h1>
   <div class="controls">
-    <input type="text" id="linkInput" value="https://miragather.com/TOKEN2049SGSideEvents2026" placeholder="Paste event page link..." />
-    <button onclick="fetchEvents()">Fetch</button>
-    <button class="alt" onclick="updateEvents()">Update List</button>
+    <div class="row">
+      <input type="text" id="linkInput" value="https://miragather.com/TOKEN2049SGSideEvents2026" placeholder="Paste event page link..." />
+      <button onclick="fetchEvents()">Fetch Link</button>
+      <button class="alt" onclick="updateEvents()">Update List</button>
+    </div>
+    <div style="font-size: 12px; color: #64748b; font-weight: 600;">Or Paste Page Source HTML directly (Bypasses Cloudflare block):</div>
+    <div class="row">
+      <textarea id="sourceInput" placeholder="Paste full HTML source here if Fetch Link is blocked..."></textarea>
+      <button onclick="parseFromSource()" style="background: #4f46e5;">Parse Source HTML</button>
+    </div>
   </div>
 
   <div id="status-msg"></div>
@@ -72,6 +81,57 @@
       const el = document.getElementById('status-msg');
       el.className = `status-${type}`;
       el.innerText = text;
+    }
+
+    function extractEventsFromHTML(html) {
+      const match = html.match(/<script id="__NEXT_DATA__" type="application\/json">(.*?)<\/script>/s);
+      if (!match) throw new Error("Could not find __NEXT_DATA__ script tag in HTML.");
+
+      const json = JSON.parse(match[1]);
+      const pageProps = json.props?.pageProps || {};
+      const sideEvents = pageProps.sideEvents || [];
+      const mainEvents = pageProps.mainEvents || [];
+
+      return [...sideEvents, ...mainEvents].map(item => {
+        const e = item.event || item;
+        return {
+          id: e.id || item.id || String(Math.random()),
+          name: e.name || e.event || "Untitled Event",
+          start_date: e.startDate ? new Date(e.startDate).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : (e.weekday || "TBD"),
+          location: e.location || (Array.isArray(e.city) ? e.city[0] : e.city) || "Singapore 🇸🇬",
+          website: e.website || e.link || `https://miragather.com/event/${e.slug || ''}`,
+          organizer: e.organizer || (e.hostObjArray && e.hostObjArray[0]?.name) || "Organizer"
+        };
+      });
+    }
+
+    async function parseFromSource() {
+      showStatus("Parsing pasted source code...", "info");
+      const html = document.getElementById('sourceInput').value;
+
+      if (!html) {
+        showStatus("Please paste page HTML source into the text box first.", "error");
+        return;
+      }
+
+      try {
+        const events = extractEventsFromHTML(html);
+        for (let e of events) {
+          await db.from('events').upsert({ 
+            id: e.id, 
+            name: e.name, 
+            start_date: e.start_date, 
+            location: e.location, 
+            website: e.website, 
+            organizer: e.organizer 
+          }, { onConflict: 'id', ignoreDuplicates: true });
+        }
+
+        showStatus(`Successfully parsed and saved ${events.length} events!`, "success");
+        loadData();
+      } catch (err) {
+        showStatus("Parse Error: " + err.message, "error");
+      }
     }
 
     async function loadData() {
@@ -121,16 +181,9 @@
         const res = await fetch(`/api/fetch-events?url=${encodeURIComponent(url)}`);
         const json = await res.json();
 
-        if (!res.ok || json.error) {
-          throw new Error(json.error || `Server responded with status ${res.status}`);
-        }
+        if (!res.ok || json.error) throw new Error(json.error || "Failed to fetch");
 
         const events = json.events || [];
-        if (events.length === 0) {
-          showStatus("No events found on that page.", "error");
-          return;
-        }
-
         for (let e of events) {
           await db.from('events').upsert({ 
             id: e.id, 
@@ -145,52 +198,48 @@
         showStatus(`Successfully fetched and saved ${events.length} events!`, "success");
         loadData();
       } catch (err) {
-        showStatus("Fetch Error: " + err.message, "error");
+        showStatus("Automated fetch blocked by site. Please copy page source and use 'Parse Source HTML' below.", "error");
       }
     }
 
     async function updateEvents() {
-      showStatus("Checking for new events...", "info");
-      const url = document.getElementById('linkInput').value;
+      const html = document.getElementById('sourceInput').value;
+      if (html) {
+        try {
+          const events = extractEventsFromHTML(html);
+          const { data: existing } = await db.from('events').select('id');
+          const existingIds = new Set((existing || []).map(x => x.id));
 
-      try {
-        const res = await fetch(`/api/fetch-events?url=${encodeURIComponent(url)}`);
-        const json = await res.json();
-        if (!res.ok || json.error) throw new Error(json.error || "Failed to fetch");
+          const newBody = document.getElementById('new-table');
+          newBody.innerHTML = '';
+          let newCount = 0;
 
-        const events = json.events || [];
-        const { data: existing } = await db.from('events').select('id');
-        const existingIds = new Set((existing || []).map(x => x.id));
-
-        const newBody = document.getElementById('new-table');
-        newBody.innerHTML = '';
-        let newCount = 0;
-
-        for (let e of events) {
-          if (!existingIds.has(e.id)) {
-            newCount++;
-            newBody.innerHTML += `
-              <tr>
-                <td><span class="badge-new">NEW</span> <strong><a href="${e.website || '#'}" target="_blank">${e.name}</a></strong></td>
-                <td>${e.start_date}</td>
-                <td>${e.location}</td>
-                <td>${e.organizer}</td>
-                <td>
-                  <button class="btn-action btn-applied" onclick="saveAndSet('${e.id}', '${e.name.replace(/'/g, "")}', '${e.start_date}', '${e.location}', '${e.website}', '${e.organizer}', 'applied')">Applied</button>
-                  <button class="btn-action btn-irrelevant" onclick="saveAndSet('${e.id}', '${e.name.replace(/'/g, "")}', '${e.start_date}', '${e.location}', '${e.website}', '${e.organizer}', 'not_relevant')">Not Relevant</button>
-                </td>
-              </tr>`;
+          for (let e of events) {
+            if (!existingIds.has(e.id)) {
+              newCount++;
+              newBody.innerHTML += `
+                <tr>
+                  <td><span class="badge-new">NEW</span> <strong><a href="${e.website || '#'}" target="_blank">${e.name}</a></strong></td>
+                  <td>${e.start_date}</td>
+                  <td>${e.location}</td>
+                  <td>${e.organizer}</td>
+                  <td>
+                    <button class="btn-action btn-applied" onclick="saveAndSet('${e.id}', '${e.name.replace(/'/g, "")}', '${e.start_date}', '${e.location}', '${e.website}', '${e.organizer}', 'applied')">Applied</button>
+                    <button class="btn-action btn-irrelevant" onclick="saveAndSet('${e.id}', '${e.name.replace(/'/g, "")}', '${e.start_date}', '${e.location}', '${e.website}', '${e.organizer}', 'not_relevant')">Not Relevant</button>
+                  </td>
+                </tr>`;
+            }
           }
-        }
 
-        if (newCount > 0) {
-          showStatus(`Found ${newCount} newly added events! Check top section.`, "success");
-        } else {
-          showStatus("No new events found. List is up to date!", "success");
-        }
-      } catch (err) {
-        showStatus("Update Error: " + err.message, "error");
+          if (newCount > 0) {
+            showStatus(`Found ${newCount} newly added events! Check top section.`, "success");
+          } else {
+            showStatus("No new events found. List is up to date!", "success");
+          }
+          return;
+        } catch (err) {}
       }
+      fetchEvents();
     }
 
     async function setStatus(id, status) {
