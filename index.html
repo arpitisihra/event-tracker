@@ -84,20 +84,13 @@
     }
 
     function parseDateTime(e) {
-      // Look everywhere for date strings in Mira's format
       const rawStart = e.start || e.startDate || e.event?.startDate || e.event?.start;
-      
-      if (!rawStart) {
-        return { date: e.weekday || "TBD", time: "ALL DAY" };
-      }
+      if (!rawStart) return { date: e.weekday || "TBD", time: "ALL DAY" };
 
       const d = new Date(rawStart);
-      if (isNaN(d.getTime())) {
-        return { date: e.weekday || "TBD", time: "ALL DAY" };
-      }
+      if (isNaN(d.getTime())) return { date: e.weekday || "TBD", time: "ALL DAY" };
 
       const dateStr = d.toLocaleDateString("en-US", { weekday: 'short', day: 'numeric', month: 'short' });
-      
       const hours = d.getUTCHours();
       const minutes = d.getUTCMinutes();
       
@@ -116,7 +109,6 @@
       const json = JSON.parse(match[1]);
       const pageProps = json.props?.pageProps || {};
       
-      // Gather events from all 3 possible arrays in Mira source
       const allFeatured = pageProps.allFeaturedEvents || [];
       const sideEvents = pageProps.sideEvents || [];
       const mainEvents = pageProps.mainEvents || [];
@@ -128,8 +120,6 @@
       for (let item of rawList) {
         const e = item.event || item;
         const id = e.id || item.id;
-        
-        // Deduplicate events that exist across multiple lists
         if (!id || seenIds.has(id)) continue;
         seenIds.add(id);
 
@@ -141,7 +131,7 @@
           id: id,
           name: name,
           start_date: dt.date,
-          time: dt.time,
+          location: dt.time, // Stores formatted time
           website: website
         });
       }
@@ -160,18 +150,27 @@
 
       try {
         const events = extractEventsFromHTML(html);
-        for (let e of events) {
-          await db.from('events').upsert({ 
-            id: e.id, 
-            name: e.name, 
-            start_date: e.start_date, 
-            location: e.time, 
-            website: e.website
-          }, { onConflict: 'id' });
-        }
 
-        showStatus(`Successfully parsed and saved ALL ${events.length} events!`, "success");
-        loadData();
+        // Fetch existing records to preserve 'applied' or 'not_relevant' statuses
+        const { data: existing } = await db.from('events').select('id, status');
+        const existingStatusMap = new Map((existing || []).map(x => [x.id, x.status]));
+
+        const recordsToSave = events.map(e => ({
+          id: e.id,
+          name: e.name,
+          start_date: e.start_date,
+          location: e.location,
+          website: e.website,
+          status: existingStatusMap.get(e.id) || 'active'
+        }));
+
+        // Batch save into Supabase in 1 fast call
+        const { error } = await db.from('events').upsert(recordsToSave, { onConflict: 'id' });
+        if (error) throw error;
+
+        document.getElementById('sourceInput').value = ''; // clear text box
+        showStatus(`Successfully parsed, saved, and refreshed ${events.length} events!`, "success");
+        await loadData();
       } catch (err) {
         showStatus("Parse Error: " + err.message, "error");
       }
@@ -229,18 +228,18 @@
         if (!res.ok || json.error) throw new Error(json.error || "Failed to fetch");
 
         const events = json.events || [];
-        for (let e of events) {
-          await db.from('events').upsert({ 
-            id: e.id, 
-            name: e.name, 
-            start_date: e.start_date, 
-            location: e.time, 
-            website: e.website
-          }, { onConflict: 'id' });
-        }
+        const recordsToSave = events.map(e => ({
+          id: e.id,
+          name: e.name,
+          start_date: e.start_date,
+          location: e.time,
+          website: e.website
+        }));
+
+        await db.from('events').upsert(recordsToSave, { onConflict: 'id' });
 
         showStatus(`Successfully fetched and saved ${events.length} events!`, "success");
-        loadData();
+        await loadData();
       } catch (err) {
         showStatus("Automated fetch blocked by site. Please paste page source into the text area below and click 'Parse Source HTML'.", "error");
       }
@@ -264,12 +263,12 @@
               newBody.innerHTML += `
                 <tr>
                   <td>${e.start_date}</td>
-                  <td><strong>${e.time}</strong></td>
+                  <td><strong>${e.location}</strong></td>
                   <td><span class="badge-new">NEW</span> <strong>${e.name}</strong></td>
                   <td><a href="${e.website || '#'}" target="_blank">Link ↗</a></td>
                   <td>
-                    <button class="btn-action btn-applied" onclick="saveAndSet('${e.id}', '${e.name.replace(/'/g, "")}', '${e.start_date}', '${e.time}', '${e.website}', 'applied')">Applied</button>
-                    <button class="btn-action btn-irrelevant" onclick="saveAndSet('${e.id}', '${e.name.replace(/'/g, "")}', '${e.start_date}', '${e.time}', '${e.website}', 'not_relevant')">Not Relevant</button>
+                    <button class="btn-action btn-applied" onclick="saveAndSet('${e.id}', '${e.name.replace(/'/g, "")}', '${e.start_date}', '${e.location}', '${e.website}', 'applied')">Applied</button>
+                    <button class="btn-action btn-irrelevant" onclick="saveAndSet('${e.id}', '${e.name.replace(/'/g, "")}', '${e.start_date}', '${e.location}', '${e.website}', 'not_relevant')">Not Relevant</button>
                   </td>
                 </tr>`;
             }
@@ -288,12 +287,12 @@
 
     async function setStatus(id, status) {
       await db.from('events').update({ status }).eq('id', id);
-      loadData();
+      await loadData();
     }
 
     async function saveAndSet(id, name, start_date, time, website, status) {
-      await db.from('events').insert({ id, name, start_date, location: time, website, status });
-      loadData();
+      await db.from('events').upsert({ id, name, start_date, location: time, website, status }, { onConflict: 'id' });
+      await loadData();
       document.getElementById('new-table').innerHTML = '';
     }
 
